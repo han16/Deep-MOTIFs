@@ -767,7 +767,7 @@ def recall_at_k_score(y_true: np.ndarray, y_score: np.ndarray, k: int) -> float:
 # 鏀瑰姩涓€锛氬甫鏉冮噸鐨?STRING 鍥?+ 2灞傚姞鏉?GCN 棰勮仛鍚?# ============================================================
 
 def build_weighted_string_graph(
-    ext_data_dir: Path,
+    data_dir: Path,
     score_threshold: int = 400,
     cache_path: Path | None = None,
 ) -> "nx.Graph":
@@ -782,7 +782,7 @@ def build_weighted_string_graph(
         with open(cache_path, "rb") as f:
             return pickle.load(f)
 
-    string_path = ext_data_dir / "9606.protein.links.v10.txt.gz"
+    string_path = data_dir / "9606.protein.links.v10.txt.gz"
     if not string_path.exists():
         raise FileNotFoundError(f"STRING file not found: {string_path}")
 
@@ -1901,7 +1901,7 @@ def run_pu(
     meta_df: pd.DataFrame,
     brainspan_df: pd.DataFrame,
     G,
-    ext_data_dir: Path,
+    data_dir: Path,
     output_dir: Path,
     string_mode: str,
     max_string_anchors: int,
@@ -1980,7 +1980,7 @@ def run_pu(
 
     # 鏋勫缓甯︽潈閲嶇殑 STRING 鍥撅紝鐢ㄤ簬鍔犳潈 GCN 棰勮仛鍚?    print("[INFO] Building weighted STRING graph for GCN aggregation...")
     weighted_G = build_weighted_string_graph(
-        ext_data_dir=ext_data_dir,
+        data_dir=data_dir,
         score_threshold=400,
         cache_path=output_dir.parent / "cache" / "string_graph_weighted.pkl",
     )
@@ -2640,21 +2640,21 @@ def main() -> None:
     args = parse_args()
     project_root = Path(args.project_root)
     print(f"[INFO] Using project root: {project_root}")
-    ext_data_dir = project_root / "ext_data"
-    ensure_exists(ext_data_dir, "ext_data directory")
+    data_dir = project_root / "data"
+    ensure_exists(data_dir, "data directory")
 
     labels_dir = (
-        Path(args.labels_dir).resolve()
-        if args.labels_dir
-        else project_root / "forecasd_outputs"
+    Path(args.labels_dir).resolve()
+    if args.labels_dir
+    else data_dir / "labels"
     )
     output_dir = project_root / args.output_dir
 
     print("[INFO] Loading composite table...")
-    meta_df = load_composite_table(ext_data_dir)
+    meta_df = load_composite_table(data_dir)
 
-    tada_path = ext_data_dir / "tada_new.csv"
-    jack_path = ext_data_dir / "jack_fu_gene_info(in).csv"
+    tada_path = data_dir / "tada_new.csv"
+    jack_path = data_dir / "jack_fu_gene_info(in).csv"
     ensure_exists(tada_path, "tada_new.csv")
     ensure_exists(jack_path, "jack_fu_gene_info(in).csv")
     print("[INFO] Augmenting composite table with tada_new features...")
@@ -2664,11 +2664,11 @@ def main() -> None:
     print("[INFO] Loading labels...")
     labels_df = load_labels(labels_dir)
     print("[INFO] Building STRING graph...")
-    G = build_string_graph(ext_data_dir, force_rebuild=args.force_rebuild_string)
+    G = build_string_graph(data_dir, force_rebuild=args.force_rebuild_string)
     print(f"[INFO] STRING graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
     print("[INFO] Building BrainSpan matrix...")
     brainspan_df = build_brainspan_matrix(
-        ext_data_dir=ext_data_dir,
+        ext_data_dir=data_dir,
         target_proteins=set(meta_df.index.astype(str)),
         force_rebuild=args.force_rebuild_brainspan,
     )
@@ -2694,7 +2694,7 @@ def main() -> None:
         meta_df=meta_df,
         brainspan_df=brainspan_df,
         G=G,
-        ext_data_dir=ext_data_dir,
+        data_dir=data_dir,
         output_dir=output_dir,
         string_mode=args.string_mode,
         max_string_anchors=args.max_string_anchors,

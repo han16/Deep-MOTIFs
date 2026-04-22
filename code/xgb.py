@@ -271,9 +271,9 @@ def build_brainspan_matrix(
     m_path = ext_data_dir / "brainspan" / "expression_matrix.csv"
     ann_path = ext_data_dir / "brainspan" / "rows_metadata.csv"
     fac_path = ext_data_dir / "brainspan" / "columns_metadata.csv"
-    egmap_path = ext_data_dir / "entrezgene2symbol.csv"
-    e2e_path = ext_data_dir / "entrez_gene_id.vs.string.v10.28042015.tsv"
-    missing_path = ext_data_dir / "brainspan_missing_ids.txt"
+    egmap_path = ext_data_dir / "entrez_ids" / "entrezgene2symbol.csv"
+    e2e_path = ext_data_dir / "entrez_ids" / "entrez_gene_id.vs.string.v10.28042015.tsv"
+    missing_path = ext_data_dir / "brainspan" / "brainspan_missing_ids.txt"
 
     for p, name in [
         (m_path, "BrainSpan expression_matrix.csv"),
