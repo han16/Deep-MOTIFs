@@ -11,3 +11,4 @@ analysis/*_cache
 analysis/site_libs
 .venv/
 .vs/
+deep_motifs/__pycache__/

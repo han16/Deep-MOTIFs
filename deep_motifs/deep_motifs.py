@@ -2270,7 +2270,8 @@ def run_pu(
             progress_prefix=f"[Fold {fold_idx}][PU] ",
         )
 
-        # v4: 鍥哄畾 alpha=0.5锛屼笉鍐嶅湪璁粌闆嗕笂鎼滅储銆?        # v8: 鏂板 fusion_mode="rrf" 閫夐」锛岀敤 Reciprocal Rank Fusion 浠ｆ浛绾挎€у姞鏉冦€?        best_alpha = 0.5
+        # v4: 鍥哄畾 alpha=0.5锛屼笉鍐嶅湪璁粌闆嗕笂鎼滅储銆?        # v8: 鏂板 fusion_mode="rrf" 閫夐」锛岀敤 Reciprocal Rank Fusion 浠ｆ浛绾挎€у姞鏉冦€?        
+        best_alpha = 0.5
         best_fusion_auc = float("nan")
         if xgb_oof_scores is not None:
             xgb_all = xgb_oof_scores.reindex(score_all.index).fillna(0.5).to_numpy(dtype=float)
@@ -2502,6 +2503,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--project-root",  type=str, required=True)
     p.add_argument("--labels-dir",    type=str, default=None)
     p.add_argument("--output-dir",    type=str, default="deep_motifs_outputs")
+    p.add_argument("--tada-filename",    type=str, default="tada_new.csv")
+    p.add_argument("--jack-filename",    type=str, default="jack_fu_gene_info(in).csv")
     p.add_argument("--n-splits",      type=int, default=5)
     p.add_argument("--random-state",  type=int, default=42)
     p.add_argument("--string-mode",   type=str, default="anchor",
@@ -2653,10 +2656,14 @@ def main() -> None:
     print("[INFO] Loading composite table...")
     meta_df = load_composite_table(data_dir)
 
-    tada_path = data_dir / "tada_new.csv"
-    jack_path = data_dir / "jack_fu_gene_info(in).csv"
-    ensure_exists(tada_path, "tada_new.csv")
-    ensure_exists(jack_path, "jack_fu_gene_info(in).csv")
+    tada_path = data_dir / args.tada_filename
+    jack_path = data_dir / args.jack_filename
+    
+    print(tada_path)
+    print(jack_path)
+
+    ensure_exists(tada_path, args.tada_filename)
+    ensure_exists(jack_path, args.jack_filename)
     print("[INFO] Augmenting composite table with tada_new features...")
     meta_df = augment_composite_with_tada(meta_df, tada_path, jack_path)
     print(f"[INFO] Augmented composite table shape: {meta_df.shape}")
