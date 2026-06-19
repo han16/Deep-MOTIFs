@@ -1,0 +1,60 @@
+# Virtual environments
+.venv/
+venv/
+env/
+.env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Experiment run outputs
+run_1/
+run_2/
+run_3/
+run_4/
+run_5/
+plot/
+mean_run/
+deep_motifs_v4_outputs/
+sensitive_delta_lower_bound/
+*_outputs/
+
+# Cache files (can be rebuilt automatically)
+cache/
+
+# Backup / temp files
+*.bak
+_split_build.py
+_verify_split.py
+
+# Data (too large for GitHub; document separately how to obtain)
+ext_data/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+
+# Claude
+.claude/
+
+run_multi.bat
