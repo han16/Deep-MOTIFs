@@ -21,7 +21,7 @@ numpy, pandas, scikit-learn, scipy, networkx, xgboost, statsmodels, torch
 ## Installation
 
 ```bash
-git clone https://github.com/your-username/Deep-MOTIFs.git
+git clone https://github.com/han16/Deep-MOTIFs.git
 cd Deep-MOTIFs
 
 # Create and activate virtual environment
