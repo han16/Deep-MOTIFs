@@ -37,9 +37,6 @@ cache/
 _split_build.py
 _verify_split.py
 
-# Data (too large for GitHub; document separately how to obtain)
-ext_data/
-
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb
@@ -56,5 +53,3 @@ Thumbs.db
 
 # Claude
 .claude/
-
-run_multi.bat
