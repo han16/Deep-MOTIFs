@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 
-from gene_id_utils import load_gene_mappings
+from .gene_id_utils import load_gene_mappings
 
 
 def build_weighted_string_graph(

@@ -1,4 +1,4 @@
-﻿﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import gzip
@@ -10,8 +10,13 @@ from typing import Iterable
 import networkx as nx
 import numpy as np
 import pandas as pd
+from .label_noise_utils import (
+    add_label_budget_args,
+    add_label_noise_args,
+    apply_training_label_budget,
+    apply_training_label_perturbation,
+)
 from sklearn.dummy import DummyClassifier
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
     accuracy_score,
     average_precision_score,
@@ -20,20 +25,53 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
-from sklearn.model_selection import GridSearchCV, StratifiedKFold
+from sklearn.model_selection import StratifiedKFold
 from statsmodels.nonparametric.smoothers_lowess import lowess
+from xgboost import XGBClassifier
 
-from experiments.xgb import augment_composite_with_tada
-from experiments.xgb import build_brainspan_matrix as _build_gene_brainspan_matrix
-from experiments.xgb import build_string_graph as _build_gene_string_graph
-from experiments.xgb import load_composite_table as _load_gene_composite_table
-from experiments.xgb import load_labels as _load_gene_labels
-from experiments.label_noise_utils import (
-    add_label_budget_args,
-    add_label_noise_args,
-    apply_training_label_budget,
-    apply_training_label_perturbation,
+from .gene_id_utils import (
+    aggregate_table_to_gene_level,
+    build_gene_string_graph,
+    load_gene_mappings,
 )
+
+
+# ============================================================
+# Noise injection utilities
+# ============================================================
+
+def _apply_feature_noise(
+    X: np.ndarray,
+    noise_type: str,
+    noise_level: float,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Gaussian or dropout noise applied to training features only."""
+    if noise_type == "none" or noise_level == 0.0:
+        return X
+    X = X.copy().astype(np.float32)
+    if noise_type == "gaussian":
+        stds = X.std(axis=0)
+        X += (rng.standard_normal(X.shape) * (noise_level * stds)).astype(np.float32)
+    elif noise_type == "dropout":
+        X[rng.random(X.shape) < noise_level] = 0.0
+    return X
+
+
+def _apply_label_noise(
+    y: np.ndarray,
+    flip_rate: float,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Flip flip_rate fraction of negative training labels to positive."""
+    if flip_rate == 0.0:
+        return y
+    y = y.copy()
+    neg_idx = np.where(y == 0)[0]
+    n_flip = int(len(neg_idx) * flip_rate)
+    if n_flip > 0:
+        y[rng.choice(neg_idx, size=n_flip, replace=False)] = 1
+    return y
 
 
 # ============================================================
@@ -70,11 +108,120 @@ def load_pickle(path: Path) -> object:
 # ============================================================
 
 def load_composite_table(ext_data_dir: Path) -> pd.DataFrame:
-    return _load_gene_composite_table(ext_data_dir)
+    path = ext_data_dir / "composite_table.csv"
+    ensure_exists(path, "composite_table.csv")
+    meta = pd.read_csv(path, index_col=0)
+    meta.index = meta.index.map(str)
+    meta_gene = aggregate_table_to_gene_level(meta, ext_data_dir)
+    print(f"[INFO] load_composite_table: gene-level composite shape={meta_gene.shape}")
+    return meta_gene
+
+
+def build_tada_feature_matrix(
+    tada_path: Path,
+    jack_path: Path,
+    target_proteins: set[str],
+) -> pd.DataFrame:
+    """
+    Load tada_new.csv and merge with the ENSG gene-ID universe.
+
+    Selected features (not present in composite_table.csv):
+      - FDR_TADA_ASD, FDR_TADA_DD, FDR_TADA_NDD  (float, newer cohort FDRs)
+      - ASD72, ASD185, Satterstrom102              (bool → int 0/1, ASD cohort flags)
+      - DD309, DD477, NDD373, NDD664               (bool → int, DD/NDD flags)
+      - SCZ10, SCZ244                              (bool → int, schizophrenia flags)
+      - l10BF_ASD_PTV, l10BF_ASD_misB, l10BF_ASD_misA, l10BF_ASD_DEL, l10BF_ASD_DUP
+        (log10 Bayes factors for variant types — richer signal than composite_table TADA_BF)
+
+    Missing values filled with column median after joining.
+
+    Returns DataFrame indexed by ENSG gene ID, columns prefixed with 'tada_'.
+    """
+    fu = pd.read_csv(tada_path)
+    bool_cols = [c for c in ["ASD72", "ASD185", "Satterstrom102", "DD309", "DD477",
+                              "NDD373", "NDD664", "SCZ10", "SCZ244"] if c in fu.columns]
+    float_cols = [c for c in ["FDR_TADA_ASD", "FDR_TADA_DD", "FDR_TADA_NDD",
+                               "l10BF_ASD_PTV", "l10BF_ASD_misB", "l10BF_ASD_misA",
+                               "l10BF_ASD_DEL", "l10BF_ASD_DUP",
+                               "l10BF_DD_PTV", "l10BF_DD_misB", "l10BF_DD_misA"] if c in fu.columns]
+
+    for col in bool_cols:
+        fu[col] = (fu[col].astype(str).str.lower() == "true").astype(np.float32)
+    for col in float_cols:
+        fu[col] = pd.to_numeric(fu[col], errors="coerce").astype(np.float32)
+
+    keep_cols = bool_cols + float_cols
+    fu_clean = fu[["gene_id", "gene"] + keep_cols].copy() if "gene" in fu.columns else fu[["gene_id"] + keep_cols].copy()
+
+    mappings = load_gene_mappings(jack_path.parent)
+    target_genes = set(target_proteins)
+    records: list[dict] = []
+    for _, row in fu_clean.iterrows():
+        gid = str(row.get("gene_id", "")).strip()
+        gids = {gid} if gid.startswith("ENSG") else set()
+        if not gids and "gene" in fu_clean.columns:
+            sym = str(row.get("gene", "")).strip().upper()
+            gids = set(mappings["symbol_to_ensg"].get(sym, set()))
+        for gene_id in gids:
+            if gene_id in target_genes:
+                rec = {"gene_id": gene_id}
+                for col in keep_cols:
+                    rec[col] = float(row[col]) if not pd.isna(row[col]) else float("nan")
+                records.append(rec)
+
+    if not records:
+        print("[WARN] build_tada_feature_matrix: no genes mapped — returning empty frame")
+        return pd.DataFrame(index=sorted(target_genes))
+
+    df = pd.DataFrame(records).set_index("gene_id")
+    # Aggregate duplicates: mean for floats, max for boolean flags
+    agg = {col: "max" if col in bool_cols else "mean" for col in keep_cols}
+    df = df.groupby(df.index).agg(agg)
+
+    # Reindex to full target set, fill missing with column median
+    df = df.reindex(sorted(target_genes))
+    df = df.fillna(df.median(numeric_only=True)).fillna(0.0)
+
+    # Prefix columns to avoid name collisions with composite_table
+    df.columns = ["tada_" + c for c in df.columns]
+    print(f"[INFO] build_tada_feature_matrix: {df.shape[1]} features for {(df != 0).any(axis=1).sum()} / {len(df)} genes")
+    return df
+
+
+def augment_composite_with_tada(
+    meta_df: pd.DataFrame,
+    tada_path: Path,
+    jack_path: Path,
+) -> pd.DataFrame:
+    """
+    Append tada_new.csv features to composite_table (meta_df) and return the merged frame.
+    Proteins not covered by tada_new get median-imputed values.
+    Called from main() in all training scripts to always augment meta features.
+    """
+    tada_df = build_tada_feature_matrix(
+        tada_path=tada_path,
+        jack_path=jack_path,
+        target_proteins=set(meta_df.index.astype(str)),
+    )
+    tada_df = tada_df.reindex(meta_df.index)
+    return pd.concat([meta_df, tada_df], axis=1)
 
 
 def load_labels(labels_dir: Path) -> pd.DataFrame:
-    return _load_gene_labels(labels_dir)
+    all_labels = labels_dir / "all_labels_used.csv"
+    labels = labels_dir / "labels_used.csv"
+    if all_labels.exists():
+        df = pd.read_csv(all_labels)
+    elif labels.exists():
+        df = pd.read_csv(labels)
+    else:
+        raise FileNotFoundError(f"No labels found in {labels_dir} (expected all_labels_used.csv or labels_used.csv)")
+    if "id" not in df.columns or "label" not in df.columns:
+        raise ValueError("Labels file must contain columns: id, label")
+    df = df.copy()
+    df["id"] = df["id"].astype(str)
+    df["label"] = pd.to_numeric(df["label"], errors="coerce").fillna(0).astype(int)
+    return df
 
 
 # ============================================================
@@ -109,14 +256,7 @@ def build_brainspan_matrix(
     target_proteins: set[str],
     force_rebuild: bool = False,
 ) -> pd.DataFrame:
-    return _build_gene_brainspan_matrix(ext_data_dir, target_proteins, force_rebuild)
-
-def _legacy_build_brainspan_matrix(
-    ext_data_dir: Path,
-    target_proteins: set[str],
-    force_rebuild: bool = False,
-) -> pd.DataFrame:
-    cache_path = ext_data_dir.parent / "cache" / "brainspan_matrix.pkl"
+    cache_path = ext_data_dir.parent / "cache" / "brainspan_gene_matrix.pkl"
     if cache_path.exists() and not force_rebuild:
         df = load_pickle(cache_path)
         return df.loc[df.index.intersection(pd.Index(sorted(target_proteins)))]
@@ -125,16 +265,11 @@ def _legacy_build_brainspan_matrix(
     ann_path = ext_data_dir / "brainspan" / "rows_metadata.csv"
     fac_path = ext_data_dir / "brainspan" / "columns_metadata.csv"
     egmap_path = ext_data_dir / "entrez_ids" / "entrezgene2symbol.csv"
-    e2e_path = ext_data_dir / "entrez_ids" / "entrez_gene_id.vs.string.v10.28042015.tsv"
-    missing_path = ext_data_dir / "brainspan" / "brainspan_missing_ids.txt"
-
     for p, name in [
         (m_path, "BrainSpan expression_matrix.csv"),
         (ann_path, "BrainSpan rows_metadata.csv"),
         (fac_path, "BrainSpan columns_metadata.csv"),
         (egmap_path, "entrezgene2symbol.csv"),
-        (e2e_path, "entrez_gene_id.vs.string.v10.28042015.tsv"),
-        (missing_path, "brainspan_missing_ids.txt"),
     ]:
         ensure_exists(p, name)
 
@@ -188,28 +323,24 @@ def _legacy_build_brainspan_matrix(
     std[std == 0] = 1.0
     gene_mats_flat = (gene_mats_flat - mean) / std
 
-    e2e = pd.read_csv(e2e_path, sep="\t", header=None, names=["entrez", "protein"], dtype=str)
-    e2e["protein"] = e2e["protein"].astype(str).str.replace("9606.", "", regex=False)
-    entrez_to_protein = {
-        normalize_value(row["entrez"]): normalize_value(row["protein"])
-        for _, row in e2e.iterrows()
-    }
-
-    missing_df = pd.read_csv(missing_path, sep="\t")
-    if "NCBI.gene.ID" in missing_df.columns and "Protein.stable.ID" in missing_df.columns:
-        for _, row in missing_df.iterrows():
-            entrez_to_protein[normalize_value(row["NCBI.gene.ID"])] = normalize_value(row["Protein.stable.ID"])
-
-    proteins = [entrez_to_protein.get(normalize_value(e), "") for e in row_entrez]
-    valid = [i for i, p in enumerate(proteins) if p and p in target_proteins]
+    mappings = load_gene_mappings(ext_data_dir)
+    entrez_to_ensg = mappings["entrez_to_ensg"]
+    symbol_to_ensg = mappings["symbol_to_ensg"]
+    genes: list[str] = []
+    for e, sym in zip(row_entrez, ann["gene_symbol"].tolist()):
+        candidates = set(entrez_to_ensg.get(normalize_value(e).replace(".0", ""), set()))
+        if not candidates:
+            candidates = set(symbol_to_ensg.get(normalize_value(sym).upper(), set()))
+        genes.append(sorted(candidates)[0] if candidates else "")
+    valid = [i for i, g in enumerate(genes) if g and g in target_proteins]
 
     df = pd.DataFrame(
         gene_mats_flat[valid, :],
-        index=[proteins[i] for i in valid],
+        index=[genes[i] for i in valid],
         columns=[f"bs_{j+1}" for j in range(gene_mats_flat.shape[1])],
     )
     df = df.fillna(df.median(numeric_only=True))
-    df = df[~df.index.duplicated(keep="first")]
+    df = df.groupby(df.index).mean(numeric_only=True)
 
     save_pickle(df, cache_path)
     return df
@@ -220,29 +351,7 @@ def _legacy_build_brainspan_matrix(
 # ============================================================
 
 def build_string_graph(ext_data_dir: Path, force_rebuild: bool = False) -> nx.Graph:
-    return _build_gene_string_graph(ext_data_dir, force_rebuild)
-
-def _legacy_build_string_graph(ext_data_dir: Path, force_rebuild: bool = False) -> nx.Graph:
-    cache_path = ext_data_dir.parent / "cache" / "string_graph.pkl"
-    if cache_path.exists() and not force_rebuild:
-        return load_pickle(cache_path)
-
-    string_path = ext_data_dir / "9606.protein.links.v10.txt.gz"
-    ensure_exists(string_path, "9606.protein.links.v10.txt.gz")
-
-    G = nx.Graph()
-    with gzip.open(string_path, "rt") as f:
-        header = next(f)
-        for line in f:
-            a, b, score = line.strip().split()
-            if int(score) <= 400:
-                continue
-            a = a.replace("9606.", "")
-            b = b.replace("9606.", "")
-            G.add_edge(a, b)
-
-    save_pickle(G, cache_path)
-    return G
+    return build_gene_string_graph(ext_data_dir, force_rebuild=force_rebuild)
 
 
 def build_fold_string_feature_matrix(
@@ -261,7 +370,11 @@ def build_fold_string_feature_matrix(
     index_lookup = {pid: i for i, pid in enumerate(target_ids)}
 
     for anchor in anchors:
-        lengths = nx.single_source_shortest_path_length(G, anchor)
+        try:
+            lengths = nx.single_source_shortest_path_length(G, anchor)
+        except (KeyError, nx.NetworkXError, nx.NodeNotFound):
+            # Skip anchors whose graph adjacency is inconsistent (e.g. corrupted cache)
+            continue
         for node, dist in lengths.items():
             j = index_lookup.get(node)
             if j is not None:
@@ -310,96 +423,29 @@ def compute_graph_features(
 # Model helpers and metrics
 # ============================================================
 
-def fit_rf_and_score(
+def fit_xgb_and_score(
     X_train: pd.DataFrame,
     y_train: np.ndarray,
     X_all: pd.DataFrame,
-    random_state: int,
-    inner_cv_splits: int = 5,
-) -> tuple[object, pd.Series, dict]:
-    """
-    Duda et al. 2018-style random forest fitting.
-
-    The paper trains a random forest on functional-network-derived gene
-    features, uses stratified 5-fold CV with nested grid-search for parameter
-    optimization, scores by ROC-AUC, and uses class-weighting to offset class
-    imbalance. It also notes the RF embedded feature-selection step where each
-    split considers sqrt(n_features) features. We keep this project's feature
-    matrix and output contract, but follow that RF training protocol.
-    """
+) -> tuple[object, pd.Series]:
     y_unique = np.unique(y_train)
     if y_unique.size < 2:
         constant = int(y_unique[0]) if y_unique.size == 1 else 0
         clf = DummyClassifier(strategy="constant", constant=constant)
         clf.fit(X_train, y_train)
         scores = np.full(X_all.shape[0], float(constant), dtype=float)
-        return clf, pd.Series(scores, index=X_all.index), {"constant": constant}
+        return clf, pd.Series(scores, index=X_all.index)
 
-    class_counts = np.bincount(y_train.astype(int), minlength=2)
-    n_inner = min(int(inner_cv_splits), int(class_counts.min()))
-    base_rf = RandomForestClassifier(
-        random_state=random_state,
-        n_jobs=-1,
-        max_features="sqrt",
-        bootstrap=True,
-    )
-    # The publication reports nested grid-search but does not report one final
-    # fixed hyperparameter tuple. This compact grid follows the reported design:
-    # RF model, sqrt feature subsampling, and class weighting for imbalance.
-    param_grid = {
-        "n_estimators": [200],
-        "max_depth": [None, 10],
-        "class_weight": ["balanced", "balanced_subsample"],
-    }
-    if n_inner >= 2:
-        inner_cv = StratifiedKFold(
-            n_splits=n_inner, shuffle=True, random_state=random_state + 17
-        )
-        search = GridSearchCV(
-            estimator=base_rf,
-            param_grid=param_grid,
-            scoring="roc_auc",
-            cv=inner_cv,
-            n_jobs=-1,
-            refit=True,
-        )
-        search.fit(X_train, y_train)
-        clf = search.best_estimator_
-        fit_info = {
-            "best_params": search.best_params_,
-            "best_inner_roc_auc": float(search.best_score_),
-            "inner_cv_splits": int(n_inner),
-            "max_features": "sqrt",
-        }
-    else:
-        clf = RandomForestClassifier(
-            n_estimators=200,
-            random_state=random_state,
-            n_jobs=-1,
-            max_features="sqrt",
-            bootstrap=True,
-            class_weight="balanced",
-        )
-        clf.fit(X_train, y_train)
-        fit_info = {
-            "best_params": {
-                "n_estimators": 200,
-                "max_depth": None,
-                "min_samples_leaf": 1,
-                "class_weight": "balanced",
-            },
-            "best_inner_roc_auc": float("nan"),
-            "inner_cv_splits": int(n_inner),
-            "max_features": "sqrt",
-        }
+    clf = XGBClassifier()
 
+    clf.fit(X_train, y_train)
     proba = clf.predict_proba(X_all)
     if proba.shape[1] == 1:
         scores = np.ones(X_all.shape[0], dtype=float) if int(clf.classes_[0]) == 1 else np.zeros(X_all.shape[0], dtype=float)
     else:
         pos_idx = np.flatnonzero(clf.classes_ == 1)
         scores = proba[:, int(pos_idx[0])] if len(pos_idx) else np.zeros(X_all.shape[0], dtype=float)
-    return clf, pd.Series(scores, index=X_all.index), fit_info
+    return clf, pd.Series(scores, index=X_all.index)
 
 
 def coerce_numeric_and_impute(df: pd.DataFrame) -> pd.DataFrame:
@@ -407,8 +453,8 @@ def coerce_numeric_and_impute(df: pd.DataFrame) -> pd.DataFrame:
     Convert to numeric matrix and ensure there are no NaN/inf values.
 
     Some composite_table columns may be non-numeric; they become all-NaN after coercion.
-    RandomForest cannot handle NaN, so we drop all-NaN columns, impute remaining NaN
-    with column medians, then fall back to 0 for any residual missingness.
+    To keep training stable across estimators, we drop all-NaN columns, impute
+    remaining NaN with column medians, then fall back to 0 for residual missingness.
     """
     out = df.apply(pd.to_numeric, errors="coerce")
     out = out.replace([np.inf, -np.inf], np.nan)
@@ -512,7 +558,7 @@ def build_feature_matrix(
     return X_all
 
 
-def run_rf(
+def run_xgb(
     labels_df: pd.DataFrame,
     meta_df: pd.DataFrame,
     brainspan_df: pd.DataFrame,
@@ -523,6 +569,9 @@ def run_rf(
     n_splits: int,
     random_state: int,
     force_rebuild_graph_features: bool,
+    noise_type: str = "none",
+    noise_level: float = 0.0,
+    label_flip_rate: float = 0.0,
     label_noise_mode: str = "none",
     label_noise_rate: float = 0.0,
     label_budget_positive_fraction: float = 1.0,
@@ -561,6 +610,7 @@ def run_rf(
     skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
     X_ids = labels_df["id"].values
     y = labels_df["label"].values
+    rng = np.random.default_rng(random_state)
 
     all_metrics: list[dict[str, float]] = []
     full_scores_unlabeled: list[pd.DataFrame] = []
@@ -583,6 +633,7 @@ def run_rf(
 
         train_ids = train_df["id"].tolist()
         y_train = train_df["label"].to_numpy(dtype=int)
+        y_train = _apply_label_noise(y_train, label_flip_rate, rng)
 
         if string_mode == "anchor":
             string_feature_df = build_fold_string_feature_matrix(
@@ -603,12 +654,13 @@ def run_rf(
         )
 
         X_train = X_all.loc[train_ids]
-        rf_model, final_scores, rf_fit_info = fit_rf_and_score(
+        if noise_type != "none" and noise_level > 0.0:
+            _arr = _apply_feature_noise(X_train.to_numpy(dtype=np.float32), noise_type, noise_level, rng)
+            X_train = pd.DataFrame(_arr, index=X_train.index, columns=X_train.columns)
+        _, final_scores = fit_xgb_and_score(
             X_train=X_train,
             y_train=y_train,
             X_all=X_all,
-            random_state=random_state + fold_idx * 1009,
-            inner_cv_splits=n_splits,
         )
 
         test_scores = final_scores.loc[test_df["id"]].to_numpy(dtype=float)
@@ -621,14 +673,6 @@ def run_rf(
         fold_pred_df["forecASD"] = test_scores
         fold_pred_df["pred_label"] = (fold_pred_df["forecASD"] >= 0.5).astype(int)
         fold_pred_df.to_csv(fold_dir / "test_predictions.csv", index=False)
-
-        if hasattr(rf_model, "feature_importances_"):
-            importances = pd.Series(
-                rf_model.feature_importances_,
-                index=X_train.columns,
-                name="importance",
-            ).sort_values(ascending=False)
-            importances.head(500).to_csv(fold_dir / "feature_importances_top500.csv")
 
         full_scores_df = pd.DataFrame({
             "gene_id": final_scores.index,
@@ -650,9 +694,6 @@ def run_rf(
                     "n_pos_test": int(test_df["label"].sum()),
                     "n_neg_test": int((test_df["label"] == 0).sum()),
                     "string_mode": string_mode,
-                    "model": "Duda2018-style RandomForest",
-                    "nested_grid_search_scoring": "roc_auc",
-                    "rf_fit_info": rf_fit_info,
                 },
                 f,
                 ensure_ascii=False,
@@ -713,11 +754,11 @@ def run_rf(
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Duda2018-style RandomForest baseline using this project's features."
+        description="Single XGBoost baseline using composite + BrainSpan + STRING features."
     )
     p.add_argument("--project-root", type=str, required=True, help="Directory containing ext_data/")
     p.add_argument("--labels-dir", type=str, default=None, help="Label directory; defaults to project_root/forecasd_outputs")
-    p.add_argument("--output-dir", type=str, default="rf_outputs", help="Output directory name under project root")
+    p.add_argument("--output-dir", type=str, default="xgb_outputs", help="Output directory name under project root")
     p.add_argument("--n-splits", type=int, default=5, help="Number of CV folds")
     p.add_argument("--random-state", type=int, default=42, help="Random seed for CV splitting")
     p.add_argument("--string-mode", type=str, default="anchor", choices=["anchor", "graph"], help="STRING feature mode")
@@ -725,6 +766,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--force-rebuild-brainspan", action="store_true", help="Rebuild cached BrainSpan matrix")
     p.add_argument("--force-rebuild-string", action="store_true", help="Rebuild cached STRING graph")
     p.add_argument("--force-rebuild-graph-features", action="store_true", help="Rebuild cached STRING graph features")
+    # Noise robustness
+    p.add_argument("--noise-type", type=str, default="none", choices=["none", "gaussian", "dropout"],
+                   help="Feature noise type applied to training data only (default: none)")
+    p.add_argument("--noise-level", type=float, default=0.0,
+                   help="Noise level: std multiplier for gaussian, drop rate for dropout (default: 0.0)")
+    p.add_argument("--label-flip-rate", type=float, default=0.0,
+                   help="Fraction of negative training labels flipped to positive (default: 0.0)")
     add_label_noise_args(p)
     add_label_budget_args(p)
     return p.parse_args()
@@ -742,6 +790,7 @@ def main() -> None:
 
     print("[INFO] Loading composite table...")
     meta_df = load_composite_table(ext_data_dir)
+
     tada_path = ext_data_dir / "tada_new.csv"
     jack_path = ext_data_dir / "jack_fu_gene_info(in).csv"
     ensure_exists(tada_path, "tada_new.csv")
@@ -765,8 +814,8 @@ def main() -> None:
     )
     print(f"[INFO] BrainSpan matrix shape: {brainspan_df.shape}")
 
-    print(f"[INFO] Running RF baseline (string_mode={args.string_mode})...")
-    run_rf(
+    print(f"[INFO] Running XGB baseline (string_mode={args.string_mode})...")
+    run_xgb(
         labels_df=labels_df,
         meta_df=meta_df,
         brainspan_df=brainspan_df,
@@ -781,6 +830,9 @@ def main() -> None:
         label_noise_rate=args.label_noise_rate,
         label_budget_positive_fraction=args.label_budget_positive_fraction,
         label_budget_neg_ratio=args.label_budget_neg_ratio,
+        noise_type=args.noise_type,
+        noise_level=args.noise_level,
+        label_flip_rate=args.label_flip_rate,
     )
 
     print(f"[DONE] Results saved to: {output_dir}")

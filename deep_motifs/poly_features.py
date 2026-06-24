@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from xgb import coerce_numeric_and_impute
+from .xgb import coerce_numeric_and_impute
 
 
 def compute_meta_top_pairs(

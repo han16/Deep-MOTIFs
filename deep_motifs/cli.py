@@ -5,14 +5,14 @@ from pathlib import Path
 
 import pandas as pd
 
-from xgb import build_brainspan_matrix
-from xgb import build_string_graph
-from xgb import ensure_exists
-from xgb import augment_composite_with_tada
-from xgb import load_composite_table
-from xgb import load_labels
-from label_noise_utils import add_label_budget_args
-from label_noise_utils import add_label_noise_args
+from .xgb import build_brainspan_matrix
+from .xgb import build_string_graph
+from .xgb import ensure_exists
+from .xgb import augment_composite_with_tada
+from .xgb import load_composite_table
+from .xgb import load_labels
+from .label_noise_utils import add_label_budget_args
+from .label_noise_utils import add_label_noise_args
 
 from .reproducibility import resolve_device
 from .cv import run_pu
@@ -274,7 +274,7 @@ def main() -> None:
     labels_dir = (
         Path(args.labels_dir).resolve()
         if args.labels_dir
-        else project_root / "forecasd_outputs"
+        else ext_data_dir / "labels"
     )
     output_dir = project_root / args.output_dir
 

@@ -8,11 +8,11 @@ import pandas as pd
 import torch
 from sklearn.model_selection import StratifiedKFold
 
-from xgb import build_fold_string_feature_matrix
-from xgb import compute_graph_features
-from xgb import evaluate_predictions
-from label_noise_utils import apply_training_label_budget
-from label_noise_utils import apply_training_label_perturbation
+from .xgb import build_fold_string_feature_matrix
+from .xgb import compute_graph_features
+from .xgb import evaluate_predictions
+from .label_noise_utils import apply_training_label_budget
+from .label_noise_utils import apply_training_label_perturbation
 
 from .noise import _apply_label_noise
 from .features import build_view_frames
