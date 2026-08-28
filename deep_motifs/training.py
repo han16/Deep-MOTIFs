@@ -157,9 +157,11 @@ def fit_deep_motifs_and_export(
         X_str_all_raw.to_numpy(dtype=np.float32),
     )
 
-    # ---- 鏂瑰悜浜岋細GCN 棰勮仛鍚?STRING 鐗瑰緛 ----
-    # 鐢?STRING 鍥剧殑褰掍竴鍖栭偦鎺ョ煩闃靛 x_str 鍋氫竴娆″浘鑱氬悎锛?    #   x_str_agg[i] = x_str[i] + mean(x_str[neighbours of i])
-    # ---- 鏀瑰姩涓€锛氬姞鏉冨灞?GCN 棰勮仛鍚?STRING 鐗瑰緛 ----
+    # ---- Direction 2: GCN pre-aggregation of the STRING features ----
+    # Apply one round of graph aggregation to x_str using the normalised
+    # adjacency matrix of the STRING graph:
+    #   x_str_agg[i] = x_str[i] + mean(x_str[neighbours of i])
+    # ---- Change 1: multi-layer weighted GCN pre-aggregation of STRING features ----
     x_str = _gcn_aggregate_string(
         x_str=x_str,
         G=weighted_G,
@@ -403,10 +405,11 @@ def fit_deep_motifs_and_export(
     # ============================================================
     # Training loop
     # ============================================================
-    # Self-paced PU 鈥?姣忎釜 epoch 閮芥洿鏂帮紝褰诲簳閬垮厤杩囨湡鍒嗘暟闂
+    # Self-paced PU -- updated every epoch, which completely avoids stale scores.
     sp_threshold     = 0.7
     sp_threshold_min = 0.3
-    sp_update_every  = 1      # 姣?epoch 鏇存柊锛屼唬浠峰緢灏忥紙unlabeled 鍏ㄩ噺鎺ㄧ悊锛?    reliable_neg_mask_u: np.ndarray | None = None
+    sp_update_every  = 1      # update every epoch; cheap (full inference over the unlabeled set)
+    # reliable_neg_mask_u: np.ndarray | None = None
 
     for epoch_idx in range(epochs):
 
@@ -415,8 +418,12 @@ def fit_deep_motifs_and_export(
                 model, meta_t, bs_t, str_t, tr_pos_global, device, batch_size
             )
 
-        # ---- 鏂瑰悜涓€锛歋elf-paced PU 鈥?鍔ㄦ€佹洿鏂板彲闈犺礋鏍锋湰 mask ----
-        # 姣?sp_update_every 涓?epoch锛岀敤褰撳墠妯″瀷瀵?unlabeled 鍩哄洜鎵撳垎锛?        # 鍙繚鐣欏垎鏁颁綆浜?sp_threshold 鐨勫熀鍥犲弬涓?unlabeled loss锛?        # 鎺掗櫎閭ｄ簺妯″瀷璁や负"鍙兘鏄鏍锋湰"鐨勫熀鍥犮€?        # sp_threshold 闅忚缁冭繘琛岀嚎鎬ц“鍑忥紙瓒婃潵瓒婂鏉撅級銆?        if epoch_idx % sp_update_every == 0:
+        # ---- Direction 1: Self-paced PU -- dynamically update the reliable-negative mask ----
+        # Every sp_update_every epochs, score the unlabeled genes with the current model,
+        # and keep only the genes scoring below sp_threshold in the unlabeled loss,
+        # i.e. exclude the genes the model believes are "likely positives".
+        # sp_threshold decays linearly as training progresses (getting looser and looser).
+        # if epoch_idx % sp_update_every == 0:
             model.eval()
             with torch.no_grad():
                 u_scores_list: list[np.ndarray] = []
@@ -449,13 +456,13 @@ def fit_deep_motifs_and_export(
                 1.0 - sup_resp_u, prior_weight_floor, 1.0
             ).astype(np.float32)
 
-            # 姣?5 涓?epoch 鎵嶈“鍑忎竴娆?threshold锛堝叡琛板噺 epochs/5 娆★級
+            # decay the threshold only once every 5 epochs (epochs/5 decays in total)
             if epoch_idx % 5 == 0:
                 decay_per_update = (0.7 - sp_threshold_min) / max(epochs / 5, 1)
                 sp_threshold = max(sp_threshold - decay_per_update, sp_threshold_min)
 
             n_reliable = int(reliable_neg_mask_u.sum())
-            # 姣?5 涓?epoch 鎵撳嵃涓€娆★紝閬垮厤鏃ュ織杩囧
+            # print only once every 5 epochs to avoid excessive logging
             if epoch_idx % 5 == 0:
                 print(
                     f"{progress_prefix}[SupWeight-PU] epoch={epoch_idx+1} "
@@ -472,7 +479,7 @@ def fit_deep_motifs_and_export(
         # destabilised training.  Label propagation, if needed at all, should be
         # done once after the model has converged 鈥?not interleaved with gradient updates.
 
-        # 鐢?reliable mask 绛涢€夋湰 epoch 鐨?unlabeled 鏍锋湰
+        # use the reliable mask to select this epoch's unlabeled samples
         if reliable_neg_mask_u is not None and reliable_neg_mask_u.sum() > 0:
             reliable_u_idx = unlabeled_aug[
                 np.tile(reliable_neg_mask_u, augment_factor)[:len(unlabeled_aug)]
@@ -709,7 +716,9 @@ def fit_deep_motifs_and_export(
         "final_raw_score": final_raw, "final_score": final_cal,
     })
     feat_df      = pd.DataFrame(feat, index=ids_all)
-    # score_series 鐢?final_raw锛堟湭缁?threshold remap锛夛紝渚涘灞傝瀺鍚堟悳绱娇鐢?    # 澶栧眰浼氱敤 train_df 瀵瑰簲鐨?val set 鎼滅储鏈€浼?alpha锛屽啀缁熶竴 remap
+    # score_series uses final_raw (before the threshold remap) so that the outer layer
+    # can search over it; the outer layer searches for the best alpha on the val set
+    # corresponding to train_df, then applies a single unified remap.
     score_series = pd.Series(final_raw, index=ids_all, dtype=float)
     info = {
         "best_metric":       float(best_metric),

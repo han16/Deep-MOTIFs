@@ -11,12 +11,13 @@ def search_optimal_alpha(
     n_grid: int = 21,
 ) -> tuple[float, float]:
     """
-    鍦ㄩ獙璇侀泦涓婄綉鏍兼悳绱㈡渶浼樿瀺鍚堟潈閲?伪锛?        fused = 伪 脳 xgb_score + (1-伪) 脳 pu_score
-    杩斿洖 (best_alpha, best_pr_auc)
+    Grid-search the optimal fusion weight alpha on the validation set:
+        fused = alpha * xgb_score + (1-alpha) * pu_score
+    Returns (best_alpha, best_pr_auc)
 
-    伪=1.0 鈫?绾?XGBoost
-    伪=0.0 鈫?绾?Deep-MOTIFs
-    伪=0.5 鈫?鍚勫崐铻嶅悎
+    alpha=1.0 -> pure XGBoost
+    alpha=0.0 -> pure Deep-MOTIFs
+    alpha=0.5 -> equal-weight fusion
     """
     y_true     = np.asarray(y_true,     dtype=int)
     xgb_scores = np.asarray(xgb_scores, dtype=float)
@@ -39,7 +40,7 @@ def fuse_scores(
     pu_scores: np.ndarray,
     alpha: float,
 ) -> np.ndarray:
-    """鐢ㄧ粰瀹?alpha 铻嶅悎涓ょ粍鍒嗘暟銆?"""
+    """Fuse the two score sets with the given alpha."""
     fused = float(alpha) * np.asarray(xgb_scores, dtype=float) \
           + (1.0 - float(alpha)) * np.asarray(pu_scores, dtype=float)
     return np.clip(fused, 1e-6, 1.0 - 1e-6)

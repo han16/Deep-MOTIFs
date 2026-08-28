@@ -127,7 +127,8 @@ def run_pu(
         raise ValueError(f"Only one class after filtering. n_pos={n_pos}, n_neg={n_neg}.")
     labels_df.to_csv(output_dir / "all_labels_used.csv", index=False)
 
-    # 鏋勫缓甯︽潈閲嶇殑 STRING 鍥撅紝鐢ㄤ簬鍔犳潈 GCN 棰勮仛鍚?    print("[INFO] Building weighted STRING graph for GCN aggregation...")
+    # Build the weighted STRING graph, used for the weighted GCN pre-aggregation
+    print("[INFO] Building weighted STRING graph for GCN aggregation...")
     weighted_G = build_weighted_string_graph(
         ext_data_dir=ext_data_dir,
         score_threshold=400,
@@ -457,7 +458,10 @@ def run_pu(
             progress_prefix=f"[Fold {fold_idx}][PU] ",
         )
 
-        # v4: 鍥哄畾 alpha=0.5锛屼笉鍐嶅湪璁粌闆嗕笂鎼滅储銆?        # v8: 鏂板 fusion_mode="rrf" 閫夐」锛岀敤 Reciprocal Rank Fusion 浠ｆ浛绾挎€у姞鏉冦€?        best_alpha = 0.5
+        # v4: alpha is fixed at 0.5; no longer searched on the training set.
+        # v8: added the fusion_mode="rrf" option, using Reciprocal Rank Fusion
+        #     instead of linear weighting.
+        # best_alpha = 0.5
         best_alpha = float("nan")
         best_fusion_auc = float("nan")
         if fold_prior_scores is not None:
@@ -522,7 +526,10 @@ def run_pu(
                 f"min_w={ppr_min_edge_weight}"
             )
 
-        # v19: 娣峰悎鏍″噯 鈥?闃虫€х敤 pre-PPR锛堥伩鍏嶇瀛愯啫鑳€锛夛紝闃存€х敤 post-PPR锛堜笌娴嬭瘯闆嗗悓鍒嗗竷锛?        # 璁粌闃虫€ф槸 PPR 绉嶅瓙锛宲ost-PPR 鍒嗘暟鈮?.0锛堜汉宸ヨ啫鑳€锛夆啋 杩樺師涓?pre-PPR 鍒嗘暟
+        # v19: hybrid calibration -- positives use pre-PPR (avoids seed inflation),
+        #      negatives use post-PPR (same distribution as the test set).
+        # Training positives are PPR seeds, so their post-PPR score is ~1.0
+        # (artificial inflation) -> restore them to the pre-PPR score.
         # use train-set scores to calibrate threshold consistently with test distribution
         train_ids_fold  = fit_info["train_ids"]
         train_labels    = np.asarray(fit_info["train_labels"], dtype=int)
@@ -531,7 +538,7 @@ def run_pu(
             pre_arr     = score_all_pre_ppr.reindex(train_ids_fold).to_numpy(dtype=float)
             pos_mask    = (train_labels == 1)
             fused_train = post_arr.copy()
-            fused_train[pos_mask] = pre_arr[pos_mask]   # 绉嶅瓙闃虫€ц繕鍘熶负 pre-PPR 鍒嗘暟
+            fused_train[pos_mask] = pre_arr[pos_mask]   # seed positives restored to their pre-PPR score
         else:
             fused_train = score_all.reindex(train_ids_fold).to_numpy(dtype=float)
         threshold_final = find_best_threshold_by_f1(train_labels, fused_train)

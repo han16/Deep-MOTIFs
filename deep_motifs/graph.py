@@ -14,9 +14,13 @@ def build_weighted_string_graph(
     cache_path: Path | None = None,
 ) -> "nx.Graph":
     """
-    閲嶆柊璇诲彇 STRING 鍘熷鏂囦欢锛屽湪杈逛笂瀛樺偍褰掍竴鍖栨潈閲嶃€?    鏉冮噸 = (score - threshold) / (1000 - threshold)锛岃寖鍥?(0, 1]銆?
-    xgb.py 鐨?build_string_graph 涓㈠純浜嗘潈閲嶏紝杩欓噷鐙珛璇诲彇浠ヤ繚鐣欐潈閲嶄俊鎭紝
-    渚涘姞鏉?GCN 浣跨敤銆備娇鐢ㄧ嫭绔嬬殑缂撳瓨鏂囦欢锛屼笉褰卞搷 xgb.py 鐨勭紦瀛樸€?    """
+    Re-read the raw STRING file, storing normalised weights on the edges.
+    weight = (score - threshold) / (1000 - threshold), range (0, 1].
+
+    build_string_graph in xgb.py discards the weights; here we read them
+    separately so that the weight information is preserved for the weighted GCN.
+    Uses its own cache file, so xgb.py's cache is not affected.
+    """
     import networkx as nx
     import pickle
 
@@ -69,11 +73,16 @@ def _gcn_aggregate_string(
     self_weight: float = 0.5,
 ) -> np.ndarray:
     """
-    n_layers 灞傚姞鏉?GCN 棰勮仛鍚堬細
-        x_agg[i] = self_weight 脳 x[i]
-                 + (1 - self_weight) 脳 危(w_ij 脳 x[j]) / 危(w_ij)
+    n_layers of weighted GCN pre-aggregation:
+        x_agg[i] = self_weight x x[i]
+                 + (1 - self_weight) x sum(w_ij x x[j]) / sum(w_ij)
 
-    杈规潈閲?w_ij 鏉ヨ嚜 STRING score 褰掍竴鍖栧€笺€?    鑻ュ浘鏃犳潈閲嶅睘鎬э紙fallback 鍒版棤鏉冮噸鍥撅級锛屽垯绛夋潈閲嶈仛鍚堛€?    鍙湪 allowed_ids锛坱rain universe锛夊唴鍋氶偦灞呰仛鍚堬紝閬垮厤 test 淇℃伅娉勬紡銆?    """
+    Edge weight w_ij comes from the normalised STRING score.
+    If the graph has no weight attribute (fallback to an unweighted graph),
+    aggregation is done with equal weights.
+    Neighbour aggregation is restricted to allowed_ids (the train universe)
+    to avoid leaking test information.
+    """
     lookup  = {pid: i for i, pid in enumerate(ids_all)}
     allowed = set(allowed_ids)
     x       = x_str.copy().astype(np.float32)
@@ -83,12 +92,12 @@ def _gcn_aggregate_string(
         for pid, i in lookup.items():
             if pid not in G or pid not in allowed:
                 continue
-            # 鏀堕泦甯︽潈閲嶇殑閭诲眳
+            # collect the weighted neighbours
             nbs: list[tuple[int, float]] = []
             for n in G.neighbors(pid):
                 if n not in lookup or n not in allowed:
                     continue
-                # 浼樺厛浣跨敤杈规潈閲嶏紝鏃犳潈閲嶆椂榛樿 1.0
+                # prefer the edge weight; default to 1.0 when unweighted
                 w = float(G[pid][n].get("weight", 1.0))
                 nbs.append((lookup[n], w))
             if not nbs:
