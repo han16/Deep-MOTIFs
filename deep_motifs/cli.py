@@ -83,8 +83,9 @@ def parse_args() -> argparse.Namespace:
                    help="Number of GCN aggregation layers (default: 2).")
 
     # Fold-local empirical prior
-    p.add_argument("--prior-model", type=str, default="lstm", choices=["none", "xgb", "lstm"],
-                   help="Fold-local empirical prior estimator used for EBR-PU and final RRF.")
+    p.add_argument("--prior-model", type=str, default="xgb", choices=["none", "xgb", "lstm"],
+                   help="Fold-local empirical prior estimator used for EBR-PU and final RRF "
+                        "(default: xgb; lstm requires a standalone lstm.py that is not shipped).")
     p.add_argument("--use-xgb-feature",  dest="use_xgb_feature",
                    action="store_true",  default=False)
     p.add_argument("--no-xgb-feature",   dest="use_xgb_feature",
