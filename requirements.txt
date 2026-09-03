@@ -6,3 +6,4 @@ networkx
 xgboost
 statsmodels
 torch
+pytorch-tabnet
