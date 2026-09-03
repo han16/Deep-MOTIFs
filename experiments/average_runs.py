@@ -5,11 +5,14 @@ Output goes to mean_run/<algo_outputs>/.
 
 from __future__ import annotations
 
+import argparse
 import pandas as pd
 import numpy as np
 from pathlib import Path
 
-ROOT = Path(__file__).parent
+# Project root that contains run_1..run_5 (and where mean_run/ is written).
+# Overridable with --project-root; defaults to the current working directory.
+ROOT = Path.cwd()
 RUNS = [ROOT / f"run_{i}" for i in range(1, 6)]
 OUT_ROOT = ROOT / "mean_run"
 
@@ -119,6 +122,19 @@ def process_algo(algo: str):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--project-root",
+        type=str,
+        default=".",
+        help="Directory containing run_1..run_5 (default: current directory)",
+    )
+    args = parser.parse_args()
+
+    ROOT = Path(args.project_root).resolve()
+    RUNS = [ROOT / f"run_{i}" for i in range(1, 6)]
+    OUT_ROOT = ROOT / "mean_run"
+
     print(f"Averaging across: {[r.name for r in RUNS if r.exists()]}")
     print(f"Output root: {OUT_ROOT}\n")
     for algo in ALGO_DIRS:

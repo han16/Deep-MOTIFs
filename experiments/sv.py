@@ -26,12 +26,12 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.svm import LinearSVC
 from statsmodels.nonparametric.smoothers_lowess import lowess
 
-from xgb import augment_composite_with_tada
-from xgb import build_brainspan_matrix as _build_gene_brainspan_matrix
-from xgb import build_string_graph as _build_gene_string_graph
-from xgb import load_composite_table as _load_gene_composite_table
-from xgb import load_labels as _load_gene_labels
-from label_noise_utils import (
+from experiments.xgb import augment_composite_with_tada
+from experiments.xgb import build_brainspan_matrix as _build_gene_brainspan_matrix
+from experiments.xgb import build_string_graph as _build_gene_string_graph
+from experiments.xgb import load_composite_table as _load_gene_composite_table
+from experiments.xgb import load_labels as _load_gene_labels
+from experiments.label_noise_utils import (
     add_label_budget_args,
     add_label_noise_args,
     apply_training_label_budget,

@@ -13,6 +13,7 @@ It also updates mean_run/<algo>/ by averaging the new rows from run_1..run_5.
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 import math
 
@@ -20,7 +21,9 @@ import numpy as np
 import pandas as pd
 
 
-ROOT = Path(__file__).resolve().parent
+# Project root that contains run_1..run_5 (and mean_run/).
+# Overridable with --project-root; defaults to the current working directory.
+ROOT = Path.cwd()
 PCTS = np.arange(1, 101, dtype=float) / 100.0
 AT_PCTS = {
     "mcc_at_1pct": 0.01,
@@ -228,6 +231,17 @@ def update_mean_run() -> None:
 
 
 def main() -> None:
+    global ROOT
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--project-root",
+        type=str,
+        default=".",
+        help="Directory containing run_1..run_5 (default: current directory)",
+    )
+    args = parser.parse_args()
+    ROOT = Path(args.project_root).resolve()
+
     process_run_dirs()
     process_ablation_bce()
     update_mean_run()

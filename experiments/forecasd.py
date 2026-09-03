@@ -11,7 +11,7 @@ from typing import Iterable
 import networkx as nx
 import numpy as np
 import pandas as pd
-from label_noise_utils import (
+from experiments.label_noise_utils import (
     add_label_budget_args,
     add_label_noise_args,
     apply_training_label_budget,
@@ -30,7 +30,7 @@ from sklearn.metrics import (
 from sklearn.model_selection import StratifiedKFold
 from statsmodels.nonparametric.smoothers_lowess import lowess
 
-from gene_id_utils import (
+from experiments.gene_id_utils import (
     aggregate_table_to_gene_level,
     build_gene_string_graph,
     load_gene_mappings,
@@ -157,13 +157,13 @@ def extract_positive_ids_from_sfari(sfari_new_path: Path, mapping: dict[str, dic
     """
     sfari = pd.read_csv(sfari_new_path)
 
-    # 先转成数值，无法转换的变成 NaN
+    # convert to numeric first; anything that cannot be converted becomes NaN
     sfari["gene-score-num"] = pd.to_numeric(sfari["gene-score"], errors="coerce")
 
-    # 只保留 1 和 2
+    # keep only 1 and 2
     pos = sfari[sfari["gene-score-num"].isin([1, 2])].copy()
 
-    # 用 ensembl-id 做映射
+    # map using ensembl-id
     pos_ids = pos["ensembl-id"].dropna().astype(str).str.strip().tolist()
 
     pos_ids = map_identifiers_to_gene_ids(pos_ids, mapping)
@@ -618,7 +618,7 @@ def build_brainspan_matrix(
     m_path = ext_data_dir / "brainspan" / "expression_matrix.csv"
     ann_path = ext_data_dir / "brainspan" / "rows_metadata.csv"
     fac_path = ext_data_dir / "brainspan" / "columns_metadata.csv"
-    egmap_path = ext_data_dir / "entrezgene2symbol.csv"
+    egmap_path = ext_data_dir / "entrez_ids" / "entrezgene2symbol.csv"
     for p, name in [
         (m_path, "BrainSpan expression_matrix.csv"),
         (ann_path, "BrainSpan rows_metadata.csv"),

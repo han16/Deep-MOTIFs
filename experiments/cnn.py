@@ -1,4 +1,4 @@
-﻿﻿from __future__ import annotations
+﻿from __future__ import annotations
 
 # DeepASDPred-style CNN-LSTM baseline for ASD gene prioritisation.
 

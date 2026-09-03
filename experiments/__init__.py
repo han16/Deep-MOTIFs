@@ -1,0 +1,6 @@
+"""Paper-reproducibility experiments (benchmark models + forecASD label pipeline).
+
+Run each script as a module from the repository root, e.g.:
+    python -m experiments.forecasd --project-root . ...
+    python -m experiments.xgb --project-root . ...
+"""

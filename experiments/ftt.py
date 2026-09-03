@@ -1,4 +1,4 @@
-﻿﻿from __future__ import annotations
+﻿from __future__ import annotations
 
 # FT-Transformer baseline 鈥?Feature Tokenizer + Transformer for tabular features.
 # Uses meta features only (cols i>7 from composite_table, ~11-23 features).
