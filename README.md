@@ -1,8 +1,7 @@
 # Deep-MOTIFs
 
-**Deep Multi-Omics Transformer with Integrated Features and Scores**
-
 ---
+Deep-MOTIFs -- Multi-Omics inTegratIon For autiSm
 
 ## Requirements
 
